@@ -22,24 +22,50 @@ Use JUCE for the macOS audio-device harness and later standalone host. Treat com
 
 Integrate the official Google C++ core through an adapter and use its `RealtimeRunner`/lock-free read boundary where verified. No other module may depend directly on MRT2 types.
 
+### D-004 — M3 Pro model policy
+
+**Status:** accepted from measured evidence.
+
+Use MRT2 Small by default. Base is disabled on this machine unless a future calibration proves a sustained real-time factor above 1.0 with zero underruns.
+
+### D-005 — Stable buffer policy
+
+**Status:** accepted for Phase 1 baseline.
+
+Use a 512-sample CoreAudio buffer and 4,096-sample MRT2 ring on this machine. A 2,048 ring is structurally too small for consecutive 1,920-sample model frames; 256/4,096 remains experimental because it passed only 30 seconds.
+
+### D-006 — Control latency claim
+
+**Status:** accepted with boundary.
+
+Claim 134.854 ms direct control-to-first-output-divergence on this test, not an instantaneous semantic-perception response. Keep the measured-component 94.329/114.783 ms p50/p95 values labeled as estimates.
+
 ## Open risks
 
 ### R-001 — Actual reference hardware differs from stated target
 
-Read-only system inspection must establish the machine identity. Model-size conclusions apply only to the measured machine and must not be relabeled as M4 Pro evidence.
+**Resolved:** the test machine is an M3 Pro with 36 GB unified memory, not an M4 Pro. Results are labeled accordingly.
 
 ### R-002 — Base model real-time viability
 
-The Small and Base variants require separate sustained tests. A successful short render is not evidence of real-time stability.
+**Resolved no-go:** Base averaged 51.362 ms per 40 ms frame and produced 1,107 underruns in 30 seconds.
 
 ### R-003 — Control-to-audible latency
 
-Measure prompt/semantic changes through the actual control, inference, ring-buffer, and audio path. Do not substitute Google's published latency target for a local measurement.
+**Resolved for first-sample response:** deterministic differential capture measured 134.854 ms. Perceptual semantic-recognition latency remains intentionally unclaimed.
 
 ### R-004 — Simultaneous audio I/O and inference
 
-Offline generation alone does not pass Phase 0. The gate requires real 48 kHz stereo device callbacks alongside active inference, with xrun/underrun accounting.
+**Resolved for Small:** 180.04 seconds and 16,879 callbacks completed with zero underruns or device errors at 512/4,096.
 
 ### R-005 — Upstream churn
 
-Pin MRT2 and JUCE revisions. Record exact revisions, asset hashes, build commands, and any local compatibility patches.
+**Mitigated:** source revisions and all local asset hashes are recorded. Upstream API and Xcode component behavior still require revalidation on upgrade.
+
+### R-006 — Latency versus whole-frame buffering
+
+**Open for Phase 1.** The robust ring queues roughly 61–85 ms. Partial-frame producer writes or a different handoff are required to reduce this without repeating measured underruns.
+
+### R-007 — V0 source-song pipeline
+
+**Open by scope.** Phase 0 did not test arbitrary-track analysis, separation, exact Home playback, Hold/Loop, or synchronization against golden tracks.

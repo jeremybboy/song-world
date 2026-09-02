@@ -1,0 +1,21 @@
+Phase 0 machine record — captured 2026-09-01
+
+MacBook Pro, Mac15,6
+Apple M3 Pro
+11 CPU cores: 5 performance, 6 efficiency
+14 GPU cores
+36 GB unified memory
+macOS 26.6.2 (25G83), Darwin 25.6.0
+System Integrity Protection: enabled
+
+Xcode 26.4 (17E192)
+Apple clang 21.0.0 (clang-2100.0.123.102), arm64
+System CMake 4.3.2
+Phase 0 isolated CMake 3.27.9 on Python 3.13.1
+
+Metal Toolchain component: installed
+Component build: 17E188
+Toolchain identifier: com.apple.dt.toolchain.Metal.32023.883
+Metal compiler: 32023.883
+
+Serial number, hardware UUID, UDID, username, and boot-volume label are intentionally omitted.

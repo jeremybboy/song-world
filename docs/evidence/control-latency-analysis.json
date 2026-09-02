@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "method": "bit-exact differential PCM comparison",
+  "sample_rate_hz": 48000,
+  "channels": 2,
+  "baseline_a_sha256": "2e31982cddc45511240f3379aa2ce6640e6cb28b736788ceab03d41f9ae3f359",
+  "baseline_b_sha256": "2e31982cddc45511240f3379aa2ce6640e6cb28b736788ceab03d41f9ae3f359",
+  "baseline_captures_bit_identical": true,
+  "step_capture_sha256": "a59136f95fd9e08999cb639fea9a2959ffe73cc9cb5eb5942a8efe4de6c38a1b",
+  "measured_control_write_seconds": 4.026,
+  "first_different_output_sample": 199721,
+  "first_different_output_seconds": 4.160854167,
+  "direct_control_to_output_latency_ms": 134.854,
+  "first_difference_over_1_pcm_count_latency_ms": 137.563,
+  "first_difference_over_10_pcm_counts_latency_ms": 145.437,
+  "first_difference_over_100_pcm_counts_latency_ms": 159.708,
+  "timestamp_rounding_uncertainty_ms": 0.5,
+  "note": "The first divergence is a causal pipeline measurement; it does not claim a psychoacoustic or genre-recognition threshold."
+}

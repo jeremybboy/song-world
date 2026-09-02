@@ -7,6 +7,8 @@ build/
 build-*/
 cmake-build-*/
 _deps/
+.venv/
+.tools/
 
 # Local model assets and caches
 models/

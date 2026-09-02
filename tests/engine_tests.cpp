@@ -39,7 +39,14 @@ int main() {
     std::string error;
     if (!mock->prepare(config, error)) return fail("mock prepare failed");
     mock->start();
-    mock->set_conditioning({.x = 0.75F, .y = 0.25F, .sequence = 7});
+    mock->set_conditioning({
+        .x = 0.75F,
+        .y = 0.25F,
+        .style_a = 0.25F,
+        .style_b = 0.75F,
+        .style_c = 0.0F,
+        .sequence = 7,
+    });
 
     std::vector<float> left(512);
     std::vector<float> right(512);

@@ -38,8 +38,9 @@ public:
             return false;
         }
 
-        const std::vector<std::string> prompts{config.prompt_a, config.prompt_b};
-        const std::vector<float> initial_weights{1.0F, 0.0F};
+        const std::vector<std::string> prompts{
+            config.prompt_a, config.prompt_b, config.prompt_c};
+        const std::vector<float> initial_weights{1.0F, 0.0F, 0.0F};
         runner_.set_text_prompts(prompts, initial_weights);
 
         constexpr auto prompt_timeout = std::chrono::seconds(60);
@@ -81,9 +82,16 @@ public:
     }
 
     void set_conditioning(const ConditioningState& state) noexcept override {
-        const float x = std::clamp(state.x, 0.0F, 1.0F);
-        const float weights[2]{1.0F - x, x};
-        runner_.set_blend_weights(weights, 2);
+        float weights[3]{std::max(0.0F, state.style_a),
+                         std::max(0.0F, state.style_b),
+                         std::max(0.0F, state.style_c)};
+        const float total = weights[0] + weights[1] + weights[2];
+        if (total > 0.0F) {
+            for (auto& weight : weights) weight /= total;
+        } else {
+            weights[0] = 1.0F;
+        }
+        runner_.set_blend_weights(weights, 3);
         sequence_.store(state.sequence, std::memory_order_relaxed);
     }
 

@@ -12,6 +12,7 @@ struct EngineConfig {
     std::string resource_directory;
     std::string prompt_a{"minimal dub techno, dry drums, instrumental"};
     std::string prompt_b{"warm disco funk, acoustic drums, instrumental"};
+    std::string prompt_c{"airy ambient electronica, soft percussion, instrumental"};
     // MRT2 emits 1,920-sample frames. Two frames are required so the producer
     // can enqueue the next frame before the audio callback drains the current one.
     std::size_t ring_buffer_samples{4096};
@@ -21,6 +22,9 @@ struct EngineConfig {
 struct ConditioningState {
     float x{0.0F};
     float y{0.0F};
+    float style_a{1.0F};
+    float style_b{0.0F};
+    float style_c{0.0F};
     std::uint64_t sequence{0};
 };
 

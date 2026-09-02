@@ -1,0 +1,13 @@
+{
+  "passed": true,
+  "engine_ready": true,
+  "audio_callbacks": 1561,
+  "world_reads": 808,
+  "world_underruns": 0,
+  "peak_output": 0.733787,
+  "peak_world": 0.100078,
+  "max_world_mix": 0.999714,
+  "final_world_mix": 0.000003,
+  "style_changes": 3,
+  "conditioning_sequence": 163
+}

@@ -602,7 +602,14 @@ int main(int argc, char** argv) {
             }
         }
         const float x = static_cast<float>(control_x);
-        engine->set_conditioning({.x = x, .y = 0.5F, .sequence = ++conditioning_sequence});
+        engine->set_conditioning({
+            .x = x,
+            .y = 0.5F,
+            .style_a = 1.0F - x,
+            .style_b = x,
+            .style_c = 0.0F,
+            .sequence = ++conditioning_sequence,
+        });
         measurements.conditioning_updates += 1;
         measurements.min_condition_x = std::min(measurements.min_condition_x, control_x);
         measurements.max_condition_x = std::max(measurements.max_condition_x, control_x);

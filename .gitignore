@@ -1,0 +1,30 @@
+.DS_Store
+.idea/
+.vscode/
+
+# Build products and fetched dependencies
+build/
+build-*/
+cmake-build-*/
+_deps/
+
+# Local model assets and caches
+models/
+weights/
+cache/
+*.mlxfn
+*.safetensors
+*.tflite
+
+# User and generated audio
+local-audio/
+benchmark-output/
+*.aif
+*.aiff
+*.flac
+*.m4a
+*.mp3
+*.wav
+
+# Runtime evidence is committed only after review/redaction
+artifacts/raw/

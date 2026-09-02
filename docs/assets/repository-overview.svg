@@ -1,0 +1,68 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="1200" viewBox="0 0 1200 1200" role="img" aria-labelledby="title desc">
+  <title id="title">Song World Phase 0 architecture</title>
+  <desc id="desc">Continuous semantic control flows through an isolated model adapter and lock-free ring buffer into a real-time JUCE audio callback, supported by deterministic timing.</desc>
+  <rect width="1200" height="1200" fill="#F3EFE5"/>
+  <style>
+    .kicker { font: 700 17px 'Arial Narrow', Arial, sans-serif; letter-spacing: 2.5px; fill: #252525; }
+    .title { font: 700 44px 'Arial Narrow', Arial, sans-serif; fill: #151515; }
+    .stage { font: 700 22px 'Arial Narrow', Arial, sans-serif; fill: #151515; }
+    .body { font: 18px Georgia, serif; fill: #252525; }
+    .mono { font: 15px Menlo, monospace; fill: #252525; }
+    .arrow { stroke: #252525; stroke-width: 3; fill: none; marker-end: url(#head); }
+    .support { stroke: #6C6A65; stroke-width: 2; stroke-dasharray: 8 7; fill: none; }
+  </style>
+  <defs>
+    <marker id="head" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto">
+      <path d="M0,0 L10,4 L0,8 Z" fill="#252525"/>
+    </marker>
+  </defs>
+  <text x="72" y="64" class="kicker">PHASE 0 / FEASIBILITY GATE</text>
+  <text x="72" y="116" class="title">A playable engine, before product polish</text>
+  <g transform="translate(72,180)">
+    <rect width="404" height="186" fill="#F0C75E"/>
+    <rect width="404" height="46" fill="#DDAE37"/>
+    <text x="20" y="31" class="stage">01 / CONTINUOUS CONTROL</text>
+    <text x="20" y="91" class="body">Semantic position + prompt blend</text>
+    <path d="M20 141 C94 112, 174 165, 352 123" stroke="#252525" stroke-width="4" fill="none"/>
+    <circle cx="248" cy="143" r="9" fill="#252525"/>
+  </g>
+  <path d="M476 273 L548 273" class="arrow"/>
+  <g transform="translate(552,166)">
+    <rect width="576" height="220" fill="#B6D9CE"/>
+    <rect width="576" height="46" fill="#82B8A7"/>
+    <text x="20" y="31" class="stage">02 / MODEL ADAPTER</text>
+    <text x="20" y="92" class="body">Small / Base on a non-audio inference thread</text>
+    <text x="20" y="124" class="body">Bounded generation with measured frame time</text>
+    <path d="M20 178 l22 -32 l22 53 l22 -40 l22 29 l22 -58 l22 65 l22 -32 l22 18 l22 -45 l22 59 l22 -34 l22 20 l22 -25 l22 15 l22 -38 l22 44 l22 -25 l22 17 l22 -29 l22 24" stroke="#153E34" stroke-width="4" fill="none"/>
+  </g>
+  <path d="M840 386 L840 476" class="arrow"/>
+  <g transform="translate(254,480)">
+    <rect width="692" height="190" fill="#C9B9E8"/>
+    <rect width="692" height="46" fill="#9E82D3"/>
+    <text x="20" y="31" class="stage">03 / LOCK-FREE RING BUFFER</text>
+    <text x="20" y="91" class="body">Audio-thread-safe reads + underrun accounting</text>
+    <g fill="#563F80">
+      <rect x="20" y="137" width="42" height="25"/><rect x="70" y="125" width="42" height="37"/>
+      <rect x="120" y="111" width="42" height="51"/><rect x="170" y="119" width="42" height="43"/>
+      <rect x="220" y="132" width="42" height="30"/><rect x="270" y="143" width="42" height="19"/>
+    </g>
+    <text x="360" y="151" class="mono">buffer health / dropped frames</text>
+  </g>
+  <path d="M600 670 L600 756" class="arrow"/>
+  <g transform="translate(126,760)">
+    <rect width="948" height="214" fill="#EB9B77"/>
+    <rect width="948" height="46" fill="#DC7045"/>
+    <text x="20" y="31" class="stage">04 / JUCE AUDIO OUTPUT</text>
+    <text x="20" y="92" class="body">48 kHz stereo callback—no model waits, filesystem access, or blocking logs</text>
+    <text x="20" y="124" class="body">Real device timing, callback load, underruns, and sustained evidence</text>
+    <path d="M20 169 C50 169, 50 139, 80 139 S110 189, 140 189 S170 148, 200 148 S230 180, 260 180 S290 133, 320 133 S350 169, 400 169 S450 145, 500 145 S550 189, 600 189 S650 150, 700 150 S750 176, 900 176" stroke="#572713" stroke-width="4" fill="none"/>
+  </g>
+  <g transform="translate(126,1048)">
+    <text x="0" y="0" class="kicker">DETERMINISTIC SUPPORT</text>
+    <path d="M0 24 L948 24" class="support"/>
+    <text x="0" y="62" class="mono">performance clock</text>
+    <text x="240" y="62" class="mono">source beat / bar</text>
+    <text x="490" y="62" class="mono">control timestamps</text>
+    <text x="760" y="62" class="mono">measured xruns</text>
+  </g>
+</svg>

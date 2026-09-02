@@ -9,16 +9,19 @@
 #include <atomic>
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
+#include <vector>
 
 namespace {
 
 constexpr double kSampleRate = 48000.0;
 constexpr int kDeviceBufferSamples = 512;
-constexpr double kPi = 3.14159265358979323846;
+constexpr int kPrefillSeconds = 28;
+constexpr int kPrefillTailTrimSeconds = 1;
 
 void update_atomic_max(std::atomic<float>& destination, float value) {
     float previous = destination.load(std::memory_order_relaxed);
@@ -27,136 +30,126 @@ void update_atomic_max(std::atomic<float>& destination, float value) {
                                               std::memory_order_relaxed)) {}
 }
 
-class TestTrack {
+class GoldenTrack {
 public:
-    TestTrack() : audio_(2, static_cast<int>(kSampleRate * 16.0)) { generate(); }
+    bool load(const juce::File& file, std::string& error) {
+        juce::AudioFormatManager formats;
+        formats.registerBasicFormats();
+        std::unique_ptr<juce::AudioFormatReader> reader(formats.createReaderFor(file));
+        if (!reader) {
+            error = "Cannot decode golden track: " + file.getFullPathName().toStdString();
+            return false;
+        }
+        if (reader->lengthInSamples <= 0 ||
+            reader->lengthInSamples > std::numeric_limits<int>::max()) {
+            error = "Golden track has an unsupported length";
+            return false;
+        }
+        if (reader->sampleRate <= 0.0 || reader->numChannels == 0) {
+            error = "Golden track has invalid audio metadata";
+            return false;
+        }
+
+        const int input_samples = static_cast<int>(reader->lengthInSamples);
+        juce::AudioBuffer<float> decoded(2, input_samples + 8);
+        decoded.clear();
+        if (!reader->read(&decoded, 0, input_samples, 0, true,
+                          reader->numChannels > 1)) {
+            error = "Golden track decode failed";
+            return false;
+        }
+        if (reader->numChannels == 1) {
+            decoded.copyFrom(1, 0, decoded, 0, 0, input_samples);
+        }
+
+        const double speed_ratio = reader->sampleRate / kSampleRate;
+        const int output_samples = static_cast<int>(
+            std::floor(static_cast<double>(input_samples) / speed_ratio));
+        if (output_samples <= static_cast<int>(kSampleRate * 4.0)) {
+            error = "Golden track must be longer than four seconds";
+            return false;
+        }
+        audio_.setSize(2, output_samples, false, true, false);
+        for (int channel = 0; channel < 2; ++channel) {
+            juce::LagrangeInterpolator interpolator;
+            interpolator.process(speed_ratio, decoded.getReadPointer(channel),
+                                 audio_.getWritePointer(channel), output_samples);
+        }
+        name_ = file.getFileNameWithoutExtension();
+        source_sample_rate_ = reader->sampleRate;
+        return true;
+    }
 
     [[nodiscard]] int length() const noexcept { return audio_.getNumSamples(); }
+    [[nodiscard]] double duration_seconds() const noexcept {
+        return static_cast<double>(length()) / kSampleRate;
+    }
+    [[nodiscard]] const juce::String& name() const noexcept { return name_; }
+    [[nodiscard]] double source_sample_rate() const noexcept { return source_sample_rate_; }
 
     [[nodiscard]] float sample(int channel, std::uint64_t position) const noexcept {
-        const auto index = static_cast<int>(position % static_cast<std::uint64_t>(length()));
-        return audio_.getSample(channel, index);
+        if (position >= static_cast<std::uint64_t>(length())) return 0.0F;
+        return audio_.getSample(channel, static_cast<int>(position));
+    }
+
+    [[nodiscard]] std::size_t prefill_frames() const noexcept {
+        return std::min<std::size_t>(static_cast<std::size_t>(length()),
+                                     static_cast<std::size_t>(kPrefillSeconds * kSampleRate));
+    }
+
+    [[nodiscard]] std::uint64_t handoff_anchor() const noexcept {
+        const auto frames = prefill_frames();
+        const auto trimmed_tail = static_cast<std::size_t>(
+            kPrefillTailTrimSeconds * kSampleRate);
+        return frames > trimmed_tail ? frames - trimmed_tail : 0;
+    }
+
+    [[nodiscard]] std::vector<float> interleaved_prefill() const {
+        const auto frames = prefill_frames();
+        std::vector<float> interleaved(frames * 2);
+        for (std::size_t frame = 0; frame < frames; ++frame) {
+            interleaved[frame * 2] = audio_.getSample(0, static_cast<int>(frame));
+            interleaved[frame * 2 + 1] = audio_.getSample(1, static_cast<int>(frame));
+        }
+        return interleaved;
     }
 
 private:
-    static double midi_to_hz(int note) {
-        return 440.0 * std::pow(2.0, (static_cast<double>(note) - 69.0) / 12.0);
-    }
-
-    void generate() {
-        constexpr double bpm = 120.0;
-        constexpr double beat_seconds = 60.0 / bpm;
-        constexpr std::array<int, 4> bass_notes{38, 34, 41, 36};  // D, Bb, F, C
-        constexpr int chords[4][4]{{50, 53, 57, 60},
-                                   {46, 50, 53, 57},
-                                   {53, 57, 60, 64},
-                                   {48, 52, 55, 62}};
-
-        std::uint32_t random_state = 0x51a7c0deU;
-        float previous_noise = 0.0F;
-        for (int index = 0; index < audio_.getNumSamples(); ++index) {
-            random_state = random_state * 1664525U + 1013904223U;
-            const float noise = static_cast<float>(
-                (static_cast<double>(random_state) / 4294967295.0) * 2.0 - 1.0);
-            const float bright_noise = noise - previous_noise * 0.82F;
-            previous_noise = noise;
-
-            const double seconds = static_cast<double>(index) / kSampleRate;
-            const double beat = seconds / beat_seconds;
-            const int beat_index = static_cast<int>(std::floor(beat));
-            const double beat_phase_seconds =
-                (beat - std::floor(beat)) * beat_seconds;
-            const int beat_in_bar = beat_index % 4;
-            const int chord_index = std::min(3, static_cast<int>(seconds / 4.0));
-            const double chord_phase = std::fmod(seconds, 4.0);
-
-            float kick = 0.0F;
-            if (beat_phase_seconds < 0.24) {
-                const double t = beat_phase_seconds;
-                const double phase = 2.0 * kPi * (48.0 * t + 0.9 * (1.0 - std::exp(-18.0 * t)));
-                kick = static_cast<float>(0.62 * std::sin(phase) * std::exp(-15.0 * t));
-            }
-
-            float snare = 0.0F;
-            if ((beat_in_bar == 1 || beat_in_bar == 3) && beat_phase_seconds < 0.18) {
-                const double t = beat_phase_seconds;
-                snare = static_cast<float>(
-                    (0.20 * noise + 0.08 * std::sin(2.0 * kPi * 185.0 * t)) *
-                    std::exp(-18.0 * t));
-            }
-
-            const double half_beat = beat_seconds * 0.5;
-            const double hat_phase = std::fmod(seconds, half_beat);
-            const float hat = hat_phase < 0.055
-                ? static_cast<float>(0.055 * bright_noise * std::exp(-65.0 * hat_phase))
-                : 0.0F;
-
-            const double bass_frequency = midi_to_hz(bass_notes[chord_index]);
-            const double bass_envelope = std::exp(-2.6 * beat_phase_seconds);
-            const float bass = static_cast<float>(
-                0.22 * bass_envelope *
-                (std::sin(2.0 * kPi * bass_frequency * beat_phase_seconds) +
-                 0.22 * std::sin(4.0 * kPi * bass_frequency * beat_phase_seconds)));
-
-            const double chord_edge = std::clamp(
-                std::min(chord_phase, 4.0 - chord_phase) / 0.22, 0.0, 1.0);
-            float pad_left = 0.0F;
-            float pad_right = 0.0F;
-            for (int voice = 0; voice < 4; ++voice) {
-                const double frequency = midi_to_hz(chords[chord_index][voice]);
-                const double drift = 1.0 + 0.0015 * (voice - 1.5);
-                pad_left += static_cast<float>(
-                    std::sin(2.0 * kPi * frequency * seconds) * 0.038 * chord_edge);
-                pad_right += static_cast<float>(
-                    std::sin(2.0 * kPi * frequency * drift * seconds + voice * 0.21) *
-                    0.038 * chord_edge);
-            }
-
-            const double eighth = beat_seconds * 0.5;
-            const double pluck_phase = std::fmod(seconds + eighth * 0.5, eighth);
-            const double pluck_frequency = midi_to_hz(chords[chord_index][2] + 12);
-            const float pluck = pluck_phase < 0.16
-                ? static_cast<float>(0.07 * std::sin(2.0 * kPi * pluck_frequency * pluck_phase) *
-                                     std::exp(-22.0 * pluck_phase))
-                : 0.0F;
-
-            const float centre = kick + snare + hat + bass + pluck;
-            const float left = std::tanh((centre + pad_left) * 0.88F);
-            const float right = std::tanh((centre + pad_right) * 0.88F);
-            audio_.setSample(0, index, left);
-            audio_.setSample(1, index, right);
-        }
-    }
-
     juce::AudioBuffer<float> audio_;
+    juce::String name_;
+    double source_sample_rate_{0.0};
 };
 
 class MainComponent final : public juce::AudioAppComponent,
                             private juce::Timer {
 public:
-    MainComponent(bool smoke_test, juce::File smoke_report)
+    MainComponent(bool smoke_test, juce::File smoke_report, juce::File track_file)
         : smoke_test_(smoke_test), smoke_report_(std::move(smoke_report)),
+          track_file_(std::move(track_file)),
           engine_(song_world::make_mrt2_generative_engine()) {
         setOpaque(true);
         setSize(920, 590);
 
         configure_label(title_, "SONG WORLD", 30.0F, juce::Font::bold);
-        configure_label(subtitle_, "Local experience prototype • project-owned 8-bar test track",
+        configure_label(subtitle_, "Loading golden track and source-conditioned World…",
                         15.0F, juce::Font::plain);
         subtitle_.setColour(juce::Label::textColourId, juce::Colour(0xff97a0ad));
 
         configure_button(play_, "Play");
         configure_button(enter_world_, "Enter World");
         configure_button(home_, "Home / Original");
+        play_.setEnabled(false);
         enter_world_.setEnabled(false);
+        home_.setEnabled(false);
 
-        configure_style_button(dub_, "Deep Dub", 0);
-        configure_style_button(disco_, "Warm Disco", 1);
-        configure_style_button(ambient_, "Airy Ambient", 2);
+        configure_style_button(dub_, "Source Orbit", 0);
+        configure_style_button(disco_, "Dub Shadow", 1);
+        configure_style_button(ambient_, "Ambient Afterglow", 2);
         select_style(0);
 
         configure_label(mode_, "HOME • ORIGINAL TRACK", 18.0F, juce::Font::bold);
-        configure_label(status_, "Loading MRT2 Small…", 14.0F, juce::Font::plain);
+        configure_label(status_, "Decoding source and loading MRT2 Small…", 14.0F,
+                        juce::Font::plain);
         configure_label(debug_, "Audio: starting…", 13.0F, juce::Font::plain);
         status_.setColour(juce::Label::textColourId, juce::Colour(0xffb9c2ce));
         debug_.setColour(juce::Label::textColourId, juce::Colour(0xff788493));
@@ -182,12 +175,8 @@ public:
             set_engine_error("Audio setup failed: " + device_error.toStdString());
         }
 
-        model_loader_ = std::thread([this] { load_model(); });
+        model_loader_ = std::thread([this] { load_experience(); });
         smoke_started_ms_ = juce::Time::getMillisecondCounterHiRes();
-        if (smoke_test_) {
-            playing_.store(true, std::memory_order_relaxed);
-            play_.setButtonText("Pause");
-        }
         startTimerHz(20);
     }
 
@@ -200,7 +189,6 @@ public:
 
     void prepareToPlay(int, double sample_rate) override {
         actual_sample_rate_.store(sample_rate, std::memory_order_relaxed);
-        home_position_.store(0, std::memory_order_relaxed);
     }
 
     void getNextAudioBlock(const juce::AudioSourceChannelInfo& output) override {
@@ -213,8 +201,9 @@ public:
         world_audio_.clear(0, 0, output.numSamples);
         world_audio_.clear(1, 0, output.numSamples);
 
-        bool world_ok = true;
-        if (engine_ready_.load(std::memory_order_acquire) &&
+        const bool playing = playing_.load(std::memory_order_relaxed);
+        bool world_ok = false;
+        if (playing && engine_ready_.load(std::memory_order_acquire) &&
             output.numSamples <= world_audio_.getNumSamples()) {
             world_ok = engine_->pull_audio(world_audio_.getWritePointer(0),
                                            world_audio_.getWritePointer(1),
@@ -233,11 +222,10 @@ public:
             ? target_world_mix_.load(std::memory_order_relaxed)
             : 0.0F;
         const double sample_rate = std::max(1.0, actual_sample_rate_.load(std::memory_order_relaxed));
-        const float smoothing = static_cast<float>(1.0 - std::exp(-1.0 / (0.20 * sample_rate)));
+        const float smoothing = static_cast<float>(1.0 - std::exp(-1.0 / (0.45 * sample_rate)));
         float output_peak = 0.0F;
         float world_peak = 0.0F;
-        const bool playing = playing_.load(std::memory_order_relaxed);
-
+        std::uint64_t limited_samples = 0;
         for (int sample = 0; sample < output.numSamples; ++sample) {
             mix += (target - mix) * smoothing;
             const float generated_left = world_ok ? world_left[sample] : 0.0F;
@@ -245,10 +233,16 @@ public:
             world_peak = std::max(world_peak,
                                   std::max(std::abs(generated_left), std::abs(generated_right)));
             if (playing) {
-                const float original_left = test_track_.sample(0, position);
-                const float original_right = test_track_.sample(1, position);
-                left[sample] = original_left + (generated_left - original_left) * mix;
-                right[sample] = original_right + (generated_right - original_right) * mix;
+                const float original_left = golden_track_.sample(0, position);
+                const float original_right = golden_track_.sample(1, position);
+                const float mixed_left =
+                    original_left + (generated_left - original_left) * mix;
+                const float mixed_right =
+                    original_right + (generated_right - original_right) * mix;
+                limited_samples += std::abs(mixed_left) > 1.0F ? 1 : 0;
+                limited_samples += std::abs(mixed_right) > 1.0F ? 1 : 0;
+                left[sample] = std::clamp(mixed_left, -1.0F, 1.0F);
+                right[sample] = std::clamp(mixed_right, -1.0F, 1.0F);
                 output_peak = std::max(output_peak,
                                        std::max(std::abs(left[sample]), std::abs(right[sample])));
                 ++position;
@@ -260,6 +254,7 @@ public:
         update_atomic_max(max_world_mix_, mix);
         update_atomic_max(peak_output_, output_peak);
         update_atomic_max(peak_world_, world_peak);
+        limited_samples_.fetch_add(limited_samples, std::memory_order_relaxed);
         audio_callbacks_.fetch_add(1, std::memory_order_relaxed);
     }
 
@@ -337,9 +332,9 @@ private:
         configure_button(button, text);
         button.setClickingTogglesState(true);
         button.setRadioGroupId(1300);
-        button.setTooltip(index == 0 ? "Sparse dub space and dry drums"
-                                    : index == 1 ? "Warm groove and acoustic drums"
-                                                 : "Soft, open ambient electronics");
+        button.setTooltip(index == 0 ? "Closest semantic orbit around the source context"
+                                    : index == 1 ? "Source-seeded continuation steered toward dub space"
+                                                 : "Source-seeded continuation steered toward open ambience");
         button.setEnabled(false);
     }
 
@@ -358,7 +353,7 @@ private:
         in_world_ = true;
         target_world_mix_.store(1.0F, std::memory_order_relaxed);
         enter_world_.setButtonText("In World");
-        mode_.setText("WORLD • LIVE MRT2 SMALL", juce::dontSendNotification);
+        mode_.setText("WORLD • SOURCE-SEEDED MRT2", juce::dontSendNotification);
     }
 
     void return_home() {
@@ -368,7 +363,21 @@ private:
         mode_.setText("HOME • ORIGINAL TRACK", juce::dontSendNotification);
     }
 
-    void load_model() {
+    void load_experience() {
+        std::string error;
+        if (!track_file_.existsAsFile()) {
+            set_engine_error("Golden track is missing: " +
+                             track_file_.getFullPathName().toStdString());
+            return;
+        }
+        if (!golden_track_.load(track_file_, error)) {
+            set_engine_error(error);
+            return;
+        }
+        track_ready_.store(true, std::memory_order_release);
+        home_position_.store(golden_track_.handoff_anchor(),
+                             std::memory_order_relaxed);
+
         const auto asset_root = juce::File::getSpecialLocation(
                                     juce::File::userDocumentsDirectory)
                                     .getChildFile("Magenta")
@@ -377,7 +386,10 @@ private:
                                .getChildFile("mrt2_small")
                                .getChildFile("mrt2_small.mlxfn");
         const auto resources = asset_root.getChildFile("resources");
-        if (!model.existsAsFile() || !resources.isDirectory()) {
+        const auto prefill_model = resources.getChildFile("spectrostream")
+                                       .getChildFile("spectrostream_encoder.mlxfn");
+        if (!model.existsAsFile() || !resources.isDirectory() ||
+            !prefill_model.existsAsFile()) {
             set_engine_error("Missing MRT2 assets under " + asset_root.getFullPathName().toStdString());
             return;
         }
@@ -385,13 +397,13 @@ private:
         song_world::EngineConfig config{
             .model_path = model.getFullPathName().toStdString(),
             .resource_directory = resources.getFullPathName().toStdString(),
-            .prompt_a = "minimal dub techno, dry drums, instrumental",
-            .prompt_b = "warm disco funk, acoustic drums, instrumental",
-            .prompt_c = "airy ambient electronica, soft percussion, instrumental",
+            .prefill_model_path = prefill_model.getFullPathName().toStdString(),
+            .prompt_a = "disco house groove, melodic bass, bright strings, dance music",
+            .prompt_b = "deep dub house, spacious echoes, restrained drums, dance music",
+            .prompt_c = "airy ambient disco, soft percussion, luminous synthesizers",
             .ring_buffer_samples = 4096,
-            .output_gain_db = -12.0F,
+            .output_gain_db = -6.0F,
         };
-        std::string error;
         if (!engine_->prepare(config, error)) {
             set_engine_error(error);
             return;
@@ -404,6 +416,14 @@ private:
             .style_c = 0.0F,
             .sequence = 1,
         });
+        auto prefill_audio = golden_track_.interleaved_prefill();
+        if (!engine_->prefill_source(prefill_audio.data(),
+                                     golden_track_.prefill_frames(), error)) {
+            set_engine_error(error);
+            return;
+        }
+        home_position_.store(golden_track_.handoff_anchor(),
+                             std::memory_order_relaxed);
         engine_->start();
         engine_ready_.store(true, std::memory_order_release);
         engine_state_.store(1, std::memory_order_release);
@@ -425,10 +445,17 @@ private:
     void timerCallback() override {
         const int state = engine_state_.load(std::memory_order_acquire);
         if (state == 1) {
+            play_.setEnabled(true);
             enter_world_.setEnabled(true);
+            home_.setEnabled(true);
             dub_.setEnabled(true);
             disco_.setEnabled(true);
             ambient_.setEnabled(true);
+            if (!ready_ui_initialized_) {
+                ready_ui_initialized_ = true;
+                subtitle_.setText(golden_track_.name() + " • source context → parallel World",
+                                  juce::dontSendNotification);
+            }
             for (std::size_t index = 0; index < current_style_weights_.size(); ++index) {
                 current_style_weights_[index] +=
                     (target_style_weights_[index] - current_style_weights_[index]) * 0.16F;
@@ -446,16 +473,25 @@ private:
                 status_tick_ = 0;
                 const auto telemetry = engine_->telemetry();
                 const double buffered_ms = telemetry.buffer_available_samples / kSampleRate * 1000.0;
-                status_.setText("MRT2 Small ready • " +
+                status_.setText("Source prefill " +
+                                    juce::String(telemetry.source_prefill_ms / 1000.0, 1) +
+                                    " s • MRT2 " +
                                     juce::String(telemetry.frame_total_ms, 1) +
                                     " ms/frame • " + juce::String(buffered_ms, 0) +
                                     " ms buffered",
                                 juce::dontSendNotification);
-                debug_.setText("48 kHz • 512 device / 4096 ring • direct control response ≈135 ms • underruns " +
+                const double source_seconds =
+                    static_cast<double>(home_position_.load(std::memory_order_relaxed)) /
+                    kSampleRate;
+                debug_.setText("Source " + format_time(source_seconds) +
+                                   " • parallel clocks • 48 kHz / 512 / 4096 • underruns " +
                                    juce::String(world_underruns_.load(std::memory_order_relaxed)),
                                juce::dontSendNotification);
             }
         } else if (state < 0) {
+            const bool source_ready = track_ready_.load(std::memory_order_acquire);
+            play_.setEnabled(source_ready);
+            home_.setEnabled(source_ready);
             status_.setText("Engine unavailable: " + juce::String(engine_error()),
                             juce::dontSendNotification);
             debug_.setText("Home track remains usable; Enter World is disabled.",
@@ -466,27 +502,49 @@ private:
         repaint();
     }
 
+    static juce::String format_time(double seconds) {
+        const int total = std::max(0, static_cast<int>(seconds));
+        return juce::String(total / 60).paddedLeft('0', 2) + ":" +
+               juce::String(total % 60).paddedLeft('0', 2);
+    }
+
     void advance_smoke_test() {
         const double now = juce::Time::getMillisecondCounterHiRes();
+        if (now - smoke_started_ms_ > 180000.0) {
+            finish_smoke_test(false);
+            return;
+        }
         if (engine_state_.load(std::memory_order_acquire) < 0) {
             finish_smoke_test(false);
             return;
         }
         if (smoke_stage_ == 0 && engine_ready_.load(std::memory_order_acquire)) {
-            select_style(1);
-            enter_world();
+            playing_.store(true, std::memory_order_relaxed);
+            play_.setButtonText("Pause");
             smoke_stage_ = 1;
             smoke_stage_ms_ = now;
-        } else if (smoke_stage_ == 1 && now - smoke_stage_ms_ > 3000.0) {
-            select_style(2);
+        } else if (smoke_stage_ == 1 && now - smoke_stage_ms_ > 2000.0) {
+            select_style(0);
+            enter_world();
             smoke_stage_ = 2;
             smoke_stage_ms_ = now;
         } else if (smoke_stage_ == 2 && now - smoke_stage_ms_ > 3000.0) {
-            return_home();
+            select_style(1);
             smoke_stage_ = 3;
             smoke_stage_ms_ = now;
-        } else if (smoke_stage_ == 3 && now - smoke_stage_ms_ > 2500.0) {
+        } else if (smoke_stage_ == 3 && now - smoke_stage_ms_ > 3000.0) {
+            select_style(2);
+            smoke_stage_ = 4;
+            smoke_stage_ms_ = now;
+        } else if (smoke_stage_ == 4 && now - smoke_stage_ms_ > 3000.0) {
+            return_home();
+            smoke_stage_ = 5;
+            smoke_stage_ms_ = now;
+        } else if (smoke_stage_ == 5 && now - smoke_stage_ms_ > 4000.0) {
+            const auto telemetry = engine_->telemetry();
             const bool passed = engine_ready_.load(std::memory_order_relaxed) &&
+                                track_ready_.load(std::memory_order_relaxed) &&
+                                telemetry.source_prefilled &&
                                 audio_callbacks_.load(std::memory_order_relaxed) > 0 &&
                                 world_reads_.load(std::memory_order_relaxed) > 0 &&
                                 world_underruns_.load(std::memory_order_relaxed) == 0 &&
@@ -494,6 +552,9 @@ private:
                                 peak_world_.load(std::memory_order_relaxed) > 0.001F &&
                                 max_world_mix_.load(std::memory_order_relaxed) > 0.95F &&
                                 current_world_mix_.load(std::memory_order_relaxed) < 0.05F &&
+                                home_position_.load(std::memory_order_relaxed) >
+                                    golden_track_.handoff_anchor() +
+                                        static_cast<std::uint64_t>(12.0 * kSampleRate) &&
                                 style_changes_ >= 3;
             finish_smoke_test(passed);
         }
@@ -502,15 +563,24 @@ private:
     void finish_smoke_test(bool passed) {
         if (smoke_finished_) return;
         smoke_finished_ = true;
+        const auto telemetry = engine_->telemetry();
         const juce::String report =
             "{\n"
             "  \"passed\": " + juce::String(passed ? "true" : "false") + ",\n" +
             "  \"engine_ready\": " + juce::String(engine_ready_.load() ? "true" : "false") + ",\n" +
+            "  \"track_ready\": " + juce::String(track_ready_.load() ? "true" : "false") + ",\n" +
+            "  \"source_prefilled\": " + juce::String(telemetry.source_prefilled ? "true" : "false") + ",\n" +
+            "  \"source_prefill_ms\": " + juce::String(telemetry.source_prefill_ms, 3) + ",\n" +
+            "  \"source_prefill_frames\": " + juce::String(static_cast<juce::int64>(telemetry.source_prefill_frames)) + ",\n" +
+            "  \"handoff_anchor_seconds\": " + juce::String(static_cast<double>(golden_track_.handoff_anchor()) / kSampleRate, 3) + ",\n" +
+            "  \"final_source_seconds\": " + juce::String(static_cast<double>(home_position_.load()) / kSampleRate, 3) + ",\n" +
+            "  \"played_source_seconds\": " + juce::String(static_cast<double>(home_position_.load() - golden_track_.handoff_anchor()) / kSampleRate, 3) + ",\n" +
             "  \"audio_callbacks\": " + juce::String(audio_callbacks_.load()) + ",\n" +
             "  \"world_reads\": " + juce::String(world_reads_.load()) + ",\n" +
             "  \"world_underruns\": " + juce::String(world_underruns_.load()) + ",\n" +
             "  \"peak_output\": " + juce::String(peak_output_.load(), 6) + ",\n" +
             "  \"peak_world\": " + juce::String(peak_world_.load(), 6) + ",\n" +
+            "  \"limited_samples\": " + juce::String(limited_samples_.load()) + ",\n" +
             "  \"max_world_mix\": " + juce::String(max_world_mix_.load(), 6) + ",\n" +
             "  \"final_world_mix\": " + juce::String(current_world_mix_.load(), 6) + ",\n" +
             "  \"style_changes\": " + juce::String(style_changes_) + ",\n" +
@@ -538,12 +608,14 @@ private:
 
     const bool smoke_test_;
     const juce::File smoke_report_;
-    TestTrack test_track_;
+    const juce::File track_file_;
+    GoldenTrack golden_track_;
     juce::AudioBuffer<float> world_audio_;
     std::unique_ptr<song_world::GenerativeEngine> engine_;
     std::thread model_loader_;
 
     std::atomic<bool> engine_ready_{false};
+    std::atomic<bool> track_ready_{false};
     std::atomic<int> engine_state_{0};
     std::atomic<bool> playing_{false};
     std::atomic<float> target_world_mix_{0.0F};
@@ -556,6 +628,7 @@ private:
     std::atomic<std::uint64_t> audio_callbacks_{0};
     std::atomic<std::uint64_t> world_reads_{0};
     std::atomic<std::uint64_t> world_underruns_{0};
+    std::atomic<std::uint64_t> limited_samples_{0};
 
     std::array<float, 3> current_style_weights_{1.0F, 0.0F, 0.0F};
     std::array<float, 3> target_style_weights_{1.0F, 0.0F, 0.0F};
@@ -564,6 +637,7 @@ private:
     int status_tick_{0};
     std::uint64_t conditioning_sequence_{1};
     bool in_world_{false};
+    bool ready_ui_initialized_{false};
 
     mutable std::mutex error_mutex_;
     std::string engine_error_;
@@ -576,14 +650,15 @@ private:
 
 class MainWindow final : public juce::DocumentWindow {
 public:
-    MainWindow(bool smoke_test, const juce::File& smoke_report)
+    MainWindow(bool smoke_test, const juce::File& smoke_report,
+               const juce::File& track_file)
         : DocumentWindow("Song World Prototype",
                          juce::Colour(0xff0b0f14),
                          juce::DocumentWindow::allButtons) {
         setUsingNativeTitleBar(true);
         setResizable(true, true);
         setResizeLimits(760, 520, 1200, 800);
-        setContentOwned(new MainComponent(smoke_test, smoke_report), true);
+        setContentOwned(new MainComponent(smoke_test, smoke_report, track_file), true);
         centreWithSize(getWidth(), getHeight());
         setVisible(true);
     }
@@ -596,20 +671,29 @@ public:
 class SongWorldApplication final : public juce::JUCEApplication {
 public:
     const juce::String getApplicationName() override { return "Song World Prototype"; }
-    const juce::String getApplicationVersion() override { return "0.1.0-local"; }
+    const juce::String getApplicationVersion() override { return "0.2.0-local"; }
     bool moreThanOneInstanceAllowed() override { return false; }
 
     void initialise(const juce::String&) override {
         bool smoke_test = false;
         auto smoke_report = juce::File::getSpecialLocation(juce::File::tempDirectory)
                                 .getChildFile("song-world-app-smoke.json");
+        const auto executable = juce::File::getSpecialLocation(
+            juce::File::currentExecutableFile);
+        auto track_file = executable.getParentDirectory()
+                              .getParentDirectory()
+                              .getChildFile("Resources")
+                              .getChildFile("golden-track.mp3");
         for (const auto& argument : getCommandLineParameterArray()) {
             if (argument == "--smoke-test") smoke_test = true;
             if (argument.startsWith("--smoke-report=")) {
                 smoke_report = juce::File(argument.fromFirstOccurrenceOf("=", false, false));
             }
+            if (argument.startsWith("--track=")) {
+                track_file = juce::File(argument.fromFirstOccurrenceOf("=", false, false));
+            }
         }
-        window_ = std::make_unique<MainWindow>(smoke_test, smoke_report);
+        window_ = std::make_unique<MainWindow>(smoke_test, smoke_report, track_file);
     }
 
     void shutdown() override { window_.reset(); }

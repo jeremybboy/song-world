@@ -10,6 +10,7 @@ namespace song_world {
 struct EngineConfig {
     std::string model_path;
     std::string resource_directory;
+    std::string prefill_model_path;
     std::string prompt_a{"minimal dub techno, dry drums, instrumental"};
     std::string prompt_b{"warm disco funk, acoustic drums, instrumental"};
     std::string prompt_c{"airy ambient electronica, soft percussion, instrumental"};
@@ -38,6 +39,9 @@ struct EngineTelemetry {
     std::uint64_t dropped_audio_reads{0};
     std::uint64_t conditioning_sequence{0};
     double prepare_ms{0.0};
+    bool source_prefilled{false};
+    std::size_t source_prefill_frames{0};
+    double source_prefill_ms{0.0};
 };
 
 class GenerativeEngine {
@@ -45,6 +49,11 @@ public:
     virtual ~GenerativeEngine() = default;
 
     virtual bool prepare(const EngineConfig& config, std::string& error) = 0;
+    // Controller-thread only. Seeds the model from interleaved 48 kHz stereo
+    // audio; implementations may block while encoding and rebuilding state.
+    virtual bool prefill_source(const float* interleaved_stereo,
+                                std::size_t frames,
+                                std::string& error) = 0;
     virtual void start() = 0;
     virtual void stop() = 0;
     virtual void set_conditioning(const ConditioningState& state) noexcept = 0;

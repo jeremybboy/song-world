@@ -1,4 +1,4 @@
-# Phase 0 dependencies
+# Prototype dependencies
 
 Captured 2026-09-01. Dependencies are pinned by `cmake/Dependencies.cmake`; model assets remain outside Git.
 
@@ -28,5 +28,11 @@ The MLX shell-script compatibility replacement in `cmake/Dependencies.cmake` mir
 ## Model assets
 
 The local asset directory is 4.3 GB. Key model files are 455,654,550 bytes for Small and 2,771,414,746 bytes for Base; complete sizes and SHA-256 values are in [model-assets.sha256](evidence/model-assets.sha256).
+
+The source-connected milestone reuses the already-present 104,319,983-byte
+`resources/spectrostream/spectrostream_encoder.mlxfn` asset. No dependency or
+model download was added for that milestone. Xcode's Metal compiler required
+write access to its normal per-user Clang module cache while regenerating MLX
+JIT source after a full rebuild; this installed no system component.
 
 The official MRT2 repository states Apache-2.0 for code and CC BY 4.0 for released weights. JUCE 8 is dual-licensed under AGPLv3/commercial terms; per the prototype-only decision this was not treated as a Phase 0 blocker, but it must be revisited before distribution.

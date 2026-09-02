@@ -1,0 +1,21 @@
+{
+  "passed": true,
+  "engine_ready": true,
+  "track_ready": true,
+  "source_prefilled": true,
+  "source_prefill_ms": 10939.484,
+  "source_prefill_frames": 1344000,
+  "handoff_anchor_seconds": 27.000,
+  "final_source_seconds": 42.179,
+  "played_source_seconds": 15.179,
+  "audio_callbacks": 3230,
+  "world_reads": 1423,
+  "world_underruns": 0,
+  "peak_output": 1.000000,
+  "peak_world": 0.490204,
+  "limited_samples": 1,
+  "max_world_mix": 0.999356,
+  "final_world_mix": 0.000125,
+  "style_changes": 4,
+  "conditioning_sequence": 287
+}

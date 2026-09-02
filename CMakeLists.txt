@@ -59,12 +59,12 @@ if(SONG_WORLD_ENABLE_MRT2)
         PRODUCT_NAME "Song World Prototype"
         COMPANY_NAME "Song World"
         BUNDLE_ID "com.songworld.prototype"
-        VERSION "0.1.0"
+        VERSION "0.2.0"
         NEEDS_MICROPHONE_PERMISSION FALSE
         NEEDS_CAMERA_PERMISSION FALSE
         HARDENED_RUNTIME_ENABLED FALSE
     )
-    target_sources(song_world_app PRIVATE apps/mac/Main.cpp)
+    target_sources(song_world_app PRIVATE frontend/mac/Main.cpp)
     target_link_libraries(song_world_app PRIVATE
         song_world_engine
         juce::juce_audio_utils

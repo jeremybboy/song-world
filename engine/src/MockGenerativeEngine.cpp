@@ -15,6 +15,17 @@ public:
         return true;
     }
 
+    bool prefill_source(const float* interleaved_stereo, std::size_t frames,
+                        std::string& error) override {
+        if (interleaved_stereo == nullptr || frames == 0) {
+            error = "Mock source prefill requires non-empty stereo audio";
+            return false;
+        }
+        source_prefill_frames_.store(frames, std::memory_order_relaxed);
+        source_prefilled_.store(true, std::memory_order_release);
+        return true;
+    }
+
     void start() override { running_.store(true, std::memory_order_release); }
     void stop() override { running_.store(false, std::memory_order_release); }
 
@@ -55,6 +66,8 @@ public:
             .backend = "mock",
             .ready = ready_.load(std::memory_order_acquire),
             .conditioning_sequence = sequence_.load(std::memory_order_relaxed),
+            .source_prefilled = source_prefilled_.load(std::memory_order_acquire),
+            .source_prefill_frames = source_prefill_frames_.load(std::memory_order_relaxed),
         };
     }
 
@@ -63,6 +76,8 @@ private:
     std::atomic<bool> running_{false};
     std::atomic<float> morph_{0.0F};
     std::atomic<std::uint64_t> sequence_{0};
+    std::atomic<bool> source_prefilled_{false};
+    std::atomic<std::size_t> source_prefill_frames_{0};
     double phase_{0.0};
     double pulse_phase_{0.0};
 };

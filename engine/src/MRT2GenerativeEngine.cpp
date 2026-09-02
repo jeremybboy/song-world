@@ -6,6 +6,7 @@
 #include <atomic>
 #include <chrono>
 #include <filesystem>
+#include <limits>
 #include <thread>
 #include <vector>
 
@@ -65,10 +66,56 @@ public:
             error = "MRT2 failed to load the exported MLX model";
             return false;
         }
+        if (!config.prefill_model_path.empty()) {
+            if (!std::filesystem::exists(config.prefill_model_path)) {
+                error = "MRT2 prefill model path does not exist: " +
+                        config.prefill_model_path;
+                return false;
+            }
+            if (!runner_.load_prefill_model(config.prefill_model_path.c_str(), nullptr)) {
+                error = "MRT2 failed to load the SpectroStream prefill encoder";
+                return false;
+            }
+            prefill_available_.store(true, std::memory_order_release);
+        }
 
         prepare_ms_ = std::chrono::duration<double, std::milli>(clock::now() - started).count();
         ready_.store(true, std::memory_order_release);
         running_.store(true, std::memory_order_release);
+        return true;
+    }
+
+    bool prefill_source(const float* interleaved_stereo, std::size_t frames,
+                        std::string& error) override {
+        using clock = std::chrono::steady_clock;
+        if (!ready_.load(std::memory_order_acquire)) {
+            error = "MRT2 must be prepared before source prefill";
+            return false;
+        }
+        if (!prefill_available_.load(std::memory_order_acquire)) {
+            error = "MRT2 SpectroStream prefill encoder is not loaded";
+            return false;
+        }
+        if (interleaved_stereo == nullptr || frames == 0 ||
+            frames > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
+            error = "MRT2 source prefill requires a valid frame count";
+            return false;
+        }
+
+        std::vector<std::string> logs;
+        const auto started = clock::now();
+        const bool success = runner_.prefill_state(
+            interleaved_stereo, static_cast<int>(frames),
+            [&logs](const std::string& message) { logs.push_back(message); });
+        prefill_ms_ = std::chrono::duration<double, std::milli>(
+                          clock::now() - started)
+                          .count();
+        if (!success) {
+            error = logs.empty() ? "MRT2 source prefill failed" : logs.back();
+            return false;
+        }
+        prefill_frames_.store(frames, std::memory_order_relaxed);
+        source_prefilled_.store(true, std::memory_order_release);
         return true;
     }
 
@@ -111,6 +158,9 @@ public:
             .dropped_audio_reads = metrics.dropped_frames,
             .conditioning_sequence = sequence_.load(std::memory_order_relaxed),
             .prepare_ms = prepare_ms_,
+            .source_prefilled = source_prefilled_.load(std::memory_order_acquire),
+            .source_prefill_frames = prefill_frames_.load(std::memory_order_relaxed),
+            .source_prefill_ms = prefill_ms_,
         };
     }
 
@@ -119,7 +169,11 @@ private:
     std::atomic<bool> ready_{false};
     std::atomic<bool> running_{false};
     std::atomic<std::uint64_t> sequence_{0};
+    std::atomic<bool> prefill_available_{false};
+    std::atomic<bool> source_prefilled_{false};
+    std::atomic<std::size_t> prefill_frames_{0};
     double prepare_ms_{0.0};
+    double prefill_ms_{0.0};
 };
 
 }  // namespace

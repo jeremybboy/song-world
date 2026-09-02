@@ -40,6 +40,15 @@ Use a 512-sample CoreAudio buffer and 4,096-sample MRT2 ring on this machine. A 
 
 Claim 134.854 ms direct control-to-first-output-divergence on this test, not an instantaneous semantic-perception response. Keep the measured-component 94.329/114.783 ms p50/p95 values labeled as estimates.
 
+### D-007 — Source-connected parallel timelines
+
+**Status:** accepted for the golden-track prototype.
+
+Seed MRT2 through its verified SpectroStream audio-prefill API. After the handoff
+anchor, continuously drain the model while Home is audible so the generated and
+source-master timelines advance together. Enter World and Home are crossfades
+between those timelines; the model never owns source chronology.
+
 ## Open risks
 
 ### R-001 — Actual reference hardware differs from stated target
@@ -68,4 +77,22 @@ Claim 134.854 ms direct control-to-first-output-divergence on this test, not an 
 
 ### R-007 — V0 source-song pipeline
 
-**Open by scope.** Phase 0 did not test arbitrary-track analysis, separation, exact Home playback, Hold/Loop, or synchronization against golden tracks.
+**Partially resolved.** One golden stereo track now decodes locally, seeds MRT2,
+advances against a deterministic Home timeline, and passes the delivered-app
+smoke test. Arbitrary import UX, analysis, separation, Hold/Loop, and exact
+beat/bar synchronization remain open.
+
+### R-008 — Perceptual source identity and long-run drift
+
+**Open listening gate.** Audio-prefill proves causal source context at the model
+boundary, not recognizable preservation of groove, harmony, vocals, bass line,
+or hook. MRT2 is not continuously constrained to the master after the anchor,
+so tempo and harmonic drift over longer World sessions remain possible.
+
+### R-009 — Prefill startup and causality
+
+**Open architecture compromise.** The fixed 28-second encoder and upstream
+1-second head/tail trims create a 27-second handoff anchor with one second of
+lookahead. Delivered-bundle prefill measured 10.939 seconds on this M3 Pro.
+Rolling causal contexts or cached anchor states are required for arbitrary
+near-immediate handoffs.

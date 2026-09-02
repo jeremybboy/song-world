@@ -38,6 +38,14 @@ int main() {
     song_world::EngineConfig config;
     std::string error;
     if (!mock->prepare(config, error)) return fail("mock prepare failed");
+    std::vector<float> source_audio(48000 * 2, 0.1F);
+    if (!mock->prefill_source(source_audio.data(), 48000, error)) {
+        return fail("mock source prefill failed");
+    }
+    if (!mock->telemetry().source_prefilled ||
+        mock->telemetry().source_prefill_frames != 48000) {
+        return fail("source prefill telemetry must reach the engine boundary");
+    }
     mock->start();
     mock->set_conditioning({
         .x = 0.75F,

@@ -8,7 +8,16 @@ Song World is a local-first macOS musical instrument prototype: a listener moves
 
 **Conditional go: Small only on this measured M3 Pro.** The Small model sustained 180.04 seconds of 48 kHz stereo CoreAudio with zero underruns at 1.95× real time; Base achieved only 0.78× real time and failed the gate.
 
-The direct A→B differential test measured 134.9 ms from the control write to the first changed output sample. See the [complete feasibility report](docs/phase0-feasibility-report.md) and [raw evidence inventory](docs/evidence/README.md); Phase 1 has not started.
+The direct A→B differential test measured 134.9 ms from the control write to the first changed output sample. See the [complete feasibility report](docs/phase0-feasibility-report.md) and [raw evidence inventory](docs/evidence/README.md). That gate now supports the local source-connected milestone below.
+
+## Local source-connected milestone
+
+The local standalone app now seeds MRT2 Small from 28 seconds of a user-provided
+golden track, then advances the source master and generated World as
+parallel timelines. The exact delivered bundle passed 15.179 seconds of
+Home→World→semantic changes→Home interaction with zero underruns; read the
+[measured report](docs/source-connected-world-report.md). Perceptual source
+identity remains an explicit listening gate, not a claimed result.
 
 ## Build and run
 
@@ -50,6 +59,9 @@ env TOOLCHAINS=com.apple.dt.toolchain.Metal.32023.883 \
 
 The bootstrap commit is the only direct `main` change. All implementation work follows branch, focused commits, pull request, and user review/merge; agents never merge.
 
-## Gate boundary
+## Current boundary
 
-This is the smallest reusable native engine harness, not the committed V0 standalone application. The next phase should wrap `GenerativeEngine` and `WorldTransport` in a JUCE standalone app, but no Phase 1 work is included in this branch.
+The engine and standalone app now prove local source-prefilled generation and
+deterministic Home return for one fixed golden-track anchor. Arbitrary import,
+beat/bar analysis, separation, Hold/Loop, causal rolling prefill, and perceptual
+identity validation remain outside this milestone.

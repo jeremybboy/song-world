@@ -12,6 +12,8 @@ The direct A→B differential test measured 134.9 ms from the control write to t
 
 ## Playable Window Lab
 
+![Song World Playable Window Lab with Replay Window and semantic style controls](docs/assets/playable-window-lab.png)
+
 The current approved prototype turns one prepared 27.317-second section into a
 replayable portal: the untouched master approaches the window, a single
 persistent MRT2 Small continuation becomes audible in World, semantic weights

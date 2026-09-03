@@ -1,4 +1,5 @@
 #include <song_world/GenerativeEngine.h>
+#include <song_world/SourceAnchorMixer.h>
 #include <song_world/WorldTransport.h>
 
 #include <juce_audio_utils/juce_audio_utils.h>
@@ -22,6 +23,17 @@ constexpr double kSampleRate = 48000.0;
 constexpr int kDeviceBufferSamples = 512;
 constexpr int kPrefillSeconds = 28;
 constexpr int kPrefillTailTrimSeconds = 1;
+
+struct HybridProfile {
+    song_world::SourceAnchorGains anchors;
+    float generation{0.0F};
+};
+
+constexpr std::array<HybridProfile, 3> kHybridProfiles{{
+    {{0.88F, 0.72F, 0.35F}, 0.28F},  // Source Orbit
+    {{0.95F, 0.20F, 0.18F}, 0.58F},  // Dub Shadow
+    {{0.22F, 0.32F, 0.75F}, 0.55F},  // Ambient Afterglow
+}};
 
 void update_atomic_max(std::atomic<float>& destination, float value) {
     float previous = destination.load(std::memory_order_relaxed);
@@ -128,7 +140,7 @@ public:
           track_file_(std::move(track_file)),
           engine_(song_world::make_mrt2_generative_engine()) {
         setOpaque(true);
-        setSize(920, 590);
+        setSize(920, 680);
 
         configure_label(title_, "SONG WORLD", 30.0F, juce::Font::bold);
         configure_label(subtitle_, "Loading golden track and source-conditioned World…",
@@ -138,14 +150,22 @@ public:
         configure_button(play_, "Play");
         configure_button(enter_world_, "Enter World");
         configure_button(home_, "Home / Original");
+        configure_button(ab_compare_, "A/B: Hybrid Anchors");
         play_.setEnabled(false);
         enter_world_.setEnabled(false);
         home_.setEnabled(false);
+        ab_compare_.setEnabled(false);
+        ab_compare_.setClickingTogglesState(true);
+        ab_compare_.setToggleState(true, juce::dontSendNotification);
 
         configure_style_button(dub_, "Source Orbit", 0);
         configure_style_button(disco_, "Dub Shadow", 1);
         configure_style_button(ambient_, "Ambient Afterglow", 2);
         select_style(0);
+
+        configure_anchor_button(bass_anchor_, "Bass / Pulse", anchor_bass_enabled_);
+        configure_anchor_button(hook_anchor_, "Mid / Hook", anchor_hook_enabled_);
+        configure_anchor_button(air_anchor_, "Stereo / Air", anchor_air_enabled_);
 
         configure_label(mode_, "HOME • ORIGINAL TRACK", 18.0F, juce::Font::bold);
         configure_label(status_, "Decoding source and loading MRT2 Small…", 14.0F,
@@ -161,6 +181,9 @@ public:
         };
         enter_world_.onClick = [this] { enter_world(); };
         home_.onClick = [this] { return_home(); };
+        ab_compare_.onClick = [this] {
+            set_hybrid_enabled(ab_compare_.getToggleState());
+        };
         dub_.onClick = [this] { select_style(0); };
         disco_.onClick = [this] { select_style(1); };
         ambient_.onClick = [this] { select_style(2); };
@@ -189,6 +212,7 @@ public:
 
     void prepareToPlay(int, double sample_rate) override {
         actual_sample_rate_.store(sample_rate, std::memory_order_relaxed);
+        anchor_mixer_.set_sample_rate(sample_rate);
     }
 
     void getNextAudioBlock(const juce::AudioSourceChannelInfo& output) override {
@@ -223,11 +247,42 @@ public:
             : 0.0F;
         const double sample_rate = std::max(1.0, actual_sample_rate_.load(std::memory_order_relaxed));
         const float smoothing = static_cast<float>(1.0 - std::exp(-1.0 / (0.45 * sample_rate)));
+        const float anchor_smoothing = static_cast<float>(
+            1.0 - std::exp(-1.0 / (0.12 * sample_rate)));
+        const bool hybrid_enabled = hybrid_enabled_.load(std::memory_order_relaxed);
+        const float target_bass = hybrid_enabled
+            ? target_anchor_bass_.load(std::memory_order_relaxed) *
+                  (anchor_bass_enabled_.load(std::memory_order_relaxed) ? 1.0F : 0.0F)
+            : 0.0F;
+        const float target_hook = hybrid_enabled
+            ? target_anchor_hook_.load(std::memory_order_relaxed) *
+                  (anchor_hook_enabled_.load(std::memory_order_relaxed) ? 1.0F : 0.0F)
+            : 0.0F;
+        const float target_air = hybrid_enabled
+            ? target_anchor_air_.load(std::memory_order_relaxed) *
+                  (anchor_air_enabled_.load(std::memory_order_relaxed) ? 1.0F : 0.0F)
+            : 0.0F;
+        const float target_generation = hybrid_enabled
+            ? target_generation_gain_.load(std::memory_order_relaxed)
+            : 1.0F;
+        float bass_gain = current_anchor_bass_.load(std::memory_order_relaxed);
+        float hook_gain = current_anchor_hook_.load(std::memory_order_relaxed);
+        float air_gain = current_anchor_air_.load(std::memory_order_relaxed);
+        float generation_gain = current_generation_gain_.load(std::memory_order_relaxed);
         float output_peak = 0.0F;
         float world_peak = 0.0F;
+        float anchor_peak = 0.0F;
         std::uint64_t limited_samples = 0;
+        std::uint64_t anchor_frames = 0;
+        std::uint64_t hybrid_frames = 0;
+        std::uint64_t prefill_only_frames = 0;
         for (int sample = 0; sample < output.numSamples; ++sample) {
             mix += (target - mix) * smoothing;
+            bass_gain += (target_bass - bass_gain) * anchor_smoothing;
+            hook_gain += (target_hook - hook_gain) * anchor_smoothing;
+            air_gain += (target_air - air_gain) * anchor_smoothing;
+            generation_gain +=
+                (target_generation - generation_gain) * anchor_smoothing;
             const float generated_left = world_ok ? world_left[sample] : 0.0F;
             const float generated_right = world_ok ? world_right[sample] : 0.0F;
             world_peak = std::max(world_peak,
@@ -235,10 +290,29 @@ public:
             if (playing) {
                 const float original_left = golden_track_.sample(0, position);
                 const float original_right = golden_track_.sample(1, position);
-                const float mixed_left =
-                    original_left + (generated_left - original_left) * mix;
-                const float mixed_right =
-                    original_right + (generated_right - original_right) * mix;
+                const auto anchor = anchor_mixer_.process(
+                    original_left, original_right,
+                    {.bass = bass_gain, .hook = hook_gain, .air = air_gain});
+                anchor_peak = std::max(
+                    anchor_peak, std::max(std::abs(anchor.left), std::abs(anchor.right)));
+                if (mix > 0.5F &&
+                    (std::abs(anchor.left) > 1.0e-5F ||
+                     std::abs(anchor.right) > 1.0e-5F)) {
+                    ++anchor_frames;
+                }
+                if (mix > 0.5F) {
+                    if (hybrid_enabled) {
+                        ++hybrid_frames;
+                    } else {
+                        ++prefill_only_frames;
+                    }
+                }
+                const float hybrid_left =
+                    anchor.left * 0.78F + generated_left * generation_gain;
+                const float hybrid_right =
+                    anchor.right * 0.78F + generated_right * generation_gain;
+                const float mixed_left = original_left * (1.0F - mix) + hybrid_left * mix;
+                const float mixed_right = original_right * (1.0F - mix) + hybrid_right * mix;
                 limited_samples += std::abs(mixed_left) > 1.0F ? 1 : 0;
                 limited_samples += std::abs(mixed_right) > 1.0F ? 1 : 0;
                 left[sample] = std::clamp(mixed_left, -1.0F, 1.0F);
@@ -251,9 +325,17 @@ public:
 
         home_position_.store(position, std::memory_order_relaxed);
         current_world_mix_.store(mix, std::memory_order_relaxed);
+        current_anchor_bass_.store(bass_gain, std::memory_order_relaxed);
+        current_anchor_hook_.store(hook_gain, std::memory_order_relaxed);
+        current_anchor_air_.store(air_gain, std::memory_order_relaxed);
+        current_generation_gain_.store(generation_gain, std::memory_order_relaxed);
         update_atomic_max(max_world_mix_, mix);
         update_atomic_max(peak_output_, output_peak);
         update_atomic_max(peak_world_, world_peak);
+        update_atomic_max(peak_anchor_, anchor_peak);
+        source_anchor_frames_.fetch_add(anchor_frames, std::memory_order_relaxed);
+        hybrid_frames_.fetch_add(hybrid_frames, std::memory_order_relaxed);
+        prefill_only_frames_.fetch_add(prefill_only_frames, std::memory_order_relaxed);
         limited_samples_.fetch_add(limited_samples, std::memory_order_relaxed);
         audio_callbacks_.fetch_add(1, std::memory_order_relaxed);
     }
@@ -269,7 +351,7 @@ public:
         auto world_panel = juce::Rectangle<float>(body.getX() + 24.0F,
                                                   body.getY() + 245.0F,
                                                   body.getWidth() - 48.0F,
-                                                  150.0F);
+                                                  230.0F);
         graphics.setColour(juce::Colour(0xff10161e));
         graphics.fillRoundedRectangle(world_panel, 14.0F);
         graphics.setColour(juce::Colour(0xff273140));
@@ -279,6 +361,10 @@ public:
         graphics.setFont(juce::Font(juce::FontOptions(12.0F, juce::Font::bold)));
         graphics.drawText("SEMANTIC DESTINATIONS",
                           world_panel.toNearestInt().removeFromTop(30).reduced(18, 0),
+                          juce::Justification::centredLeft);
+        auto anchor_title = world_panel.toNearestInt().removeFromBottom(76).removeFromTop(24);
+        graphics.drawText("SOURCE ANCHORS • REAL-TIME MULTIBAND PROXY",
+                          anchor_title.reduced(18, 0),
                           juce::Justification::centredLeft);
     }
 
@@ -294,15 +380,26 @@ public:
         enter_world_.setBounds(transport.removeFromLeft(190).reduced(2));
         transport.removeFromLeft(12);
         home_.setBounds(transport.removeFromLeft(190).reduced(2));
+        transport.removeFromLeft(12);
+        ab_compare_.setBounds(transport.removeFromLeft(220).reduced(2));
 
         area.removeFromTop(32);
-        auto style_area = area.removeFromTop(150).reduced(18, 40);
+        auto world_area = area.removeFromTop(230);
+        auto style_area = world_area.removeFromTop(150).reduced(18, 40);
         const int node_width = (style_area.getWidth() - 24) / 3;
         dub_.setBounds(style_area.removeFromLeft(node_width));
         style_area.removeFromLeft(12);
         disco_.setBounds(style_area.removeFromLeft(node_width));
         style_area.removeFromLeft(12);
         ambient_.setBounds(style_area);
+
+        auto anchor_area = world_area.removeFromTop(68).reduced(18, 9);
+        const int anchor_width = (anchor_area.getWidth() - 24) / 3;
+        bass_anchor_.setBounds(anchor_area.removeFromLeft(anchor_width));
+        anchor_area.removeFromLeft(12);
+        hook_anchor_.setBounds(anchor_area.removeFromLeft(anchor_width));
+        anchor_area.removeFromLeft(12);
+        air_anchor_.setBounds(anchor_area);
 
         area.removeFromTop(20);
         mode_.setBounds(area.removeFromTop(32));
@@ -338,6 +435,19 @@ private:
         button.setEnabled(false);
     }
 
+    void configure_anchor_button(juce::TextButton& button, const juce::String& text,
+                                 std::atomic<bool>& enabled_state) {
+        configure_button(button, text);
+        button.setClickingTogglesState(true);
+        button.setToggleState(true, juce::dontSendNotification);
+        button.setTooltip("Toggle this source-derived anchor inside World mode");
+        auto* state = &enabled_state;
+        button.onClick = [&button, state] {
+            state->store(button.getToggleState(), std::memory_order_relaxed);
+        };
+        button.setEnabled(false);
+    }
+
     void select_style(int index) {
         selected_style_ = std::clamp(index, 0, 2);
         dub_.setToggleState(selected_style_ == 0, juce::dontSendNotification);
@@ -353,7 +463,7 @@ private:
         in_world_ = true;
         target_world_mix_.store(1.0F, std::memory_order_relaxed);
         enter_world_.setButtonText("In World");
-        mode_.setText("WORLD • SOURCE-SEEDED MRT2", juce::dontSendNotification);
+        update_world_mode_label();
     }
 
     void return_home() {
@@ -361,6 +471,21 @@ private:
         target_world_mix_.store(0.0F, std::memory_order_relaxed);
         enter_world_.setButtonText("Enter World");
         mode_.setText("HOME • ORIGINAL TRACK", juce::dontSendNotification);
+    }
+
+    void set_hybrid_enabled(bool enabled) {
+        hybrid_enabled_.store(enabled, std::memory_order_relaxed);
+        ab_compare_.setToggleState(enabled, juce::dontSendNotification);
+        ab_compare_.setButtonText(enabled ? "A/B: Hybrid Anchors"
+                                          : "A/B: Prefill Only");
+        if (in_world_) update_world_mode_label();
+    }
+
+    void update_world_mode_label() {
+        mode_.setText(hybrid_enabled_.load(std::memory_order_relaxed)
+                          ? "WORLD • SOURCE ANCHORS + MRT2"
+                          : "WORLD • PREFILL-ONLY MRT2",
+                      juce::dontSendNotification);
     }
 
     void load_experience() {
@@ -448,9 +573,13 @@ private:
             play_.setEnabled(true);
             enter_world_.setEnabled(true);
             home_.setEnabled(true);
+            ab_compare_.setEnabled(true);
             dub_.setEnabled(true);
             disco_.setEnabled(true);
             ambient_.setEnabled(true);
+            bass_anchor_.setEnabled(true);
+            hook_anchor_.setEnabled(true);
+            air_anchor_.setEnabled(true);
             if (!ready_ui_initialized_) {
                 ready_ui_initialized_ = true;
                 subtitle_.setText(golden_track_.name() + " • source context → parallel World",
@@ -460,6 +589,19 @@ private:
                 current_style_weights_[index] +=
                     (target_style_weights_[index] - current_style_weights_[index]) * 0.16F;
             }
+            song_world::SourceAnchorGains anchor_targets;
+            float generation_target = 0.0F;
+            for (std::size_t index = 0; index < current_style_weights_.size(); ++index) {
+                const float weight = current_style_weights_[index];
+                anchor_targets.bass += kHybridProfiles[index].anchors.bass * weight;
+                anchor_targets.hook += kHybridProfiles[index].anchors.hook * weight;
+                anchor_targets.air += kHybridProfiles[index].anchors.air * weight;
+                generation_target += kHybridProfiles[index].generation * weight;
+            }
+            target_anchor_bass_.store(anchor_targets.bass, std::memory_order_relaxed);
+            target_anchor_hook_.store(anchor_targets.hook, std::memory_order_relaxed);
+            target_anchor_air_.store(anchor_targets.air, std::memory_order_relaxed);
+            target_generation_gain_.store(generation_target, std::memory_order_relaxed);
             engine_->set_conditioning({
                 .x = current_style_weights_[1],
                 .y = current_style_weights_[2],
@@ -484,7 +626,11 @@ private:
                     static_cast<double>(home_position_.load(std::memory_order_relaxed)) /
                     kSampleRate;
                 debug_.setText("Source " + format_time(source_seconds) +
-                                   " • parallel clocks • 48 kHz / 512 / 4096 • underruns " +
+                                   " • anchors " +
+                                   juce::String(current_anchor_bass_.load(), 2) + "/" +
+                                   juce::String(current_anchor_hook_.load(), 2) + "/" +
+                                   juce::String(current_anchor_air_.load(), 2) +
+                                   " • underruns " +
                                    juce::String(world_underruns_.load(std::memory_order_relaxed)),
                                juce::dontSendNotification);
             }
@@ -529,10 +675,12 @@ private:
             smoke_stage_ = 2;
             smoke_stage_ms_ = now;
         } else if (smoke_stage_ == 2 && now - smoke_stage_ms_ > 3000.0) {
+            set_hybrid_enabled(false);
             select_style(1);
             smoke_stage_ = 3;
             smoke_stage_ms_ = now;
         } else if (smoke_stage_ == 3 && now - smoke_stage_ms_ > 3000.0) {
+            set_hybrid_enabled(true);
             select_style(2);
             smoke_stage_ = 4;
             smoke_stage_ms_ = now;
@@ -550,6 +698,10 @@ private:
                                 world_underruns_.load(std::memory_order_relaxed) == 0 &&
                                 peak_output_.load(std::memory_order_relaxed) > 0.01F &&
                                 peak_world_.load(std::memory_order_relaxed) > 0.001F &&
+                                peak_anchor_.load(std::memory_order_relaxed) > 0.001F &&
+                                source_anchor_frames_.load(std::memory_order_relaxed) > 0 &&
+                                hybrid_frames_.load(std::memory_order_relaxed) > 0 &&
+                                prefill_only_frames_.load(std::memory_order_relaxed) > 0 &&
                                 max_world_mix_.load(std::memory_order_relaxed) > 0.95F &&
                                 current_world_mix_.load(std::memory_order_relaxed) < 0.05F &&
                                 home_position_.load(std::memory_order_relaxed) >
@@ -572,6 +724,10 @@ private:
             "  \"source_prefilled\": " + juce::String(telemetry.source_prefilled ? "true" : "false") + ",\n" +
             "  \"source_prefill_ms\": " + juce::String(telemetry.source_prefill_ms, 3) + ",\n" +
             "  \"source_prefill_frames\": " + juce::String(static_cast<juce::int64>(telemetry.source_prefill_frames)) + ",\n" +
+            "  \"model_transformer_ms\": " + juce::String(telemetry.transformer_ms, 3) + ",\n" +
+            "  \"model_frame_total_ms\": " + juce::String(telemetry.frame_total_ms, 3) + ",\n" +
+            "  \"buffer_available_samples\": " + juce::String(static_cast<juce::int64>(telemetry.buffer_available_samples)) + ",\n" +
+            "  \"device_buffer_samples\": " + juce::String(kDeviceBufferSamples) + ",\n" +
             "  \"handoff_anchor_seconds\": " + juce::String(static_cast<double>(golden_track_.handoff_anchor()) / kSampleRate, 3) + ",\n" +
             "  \"final_source_seconds\": " + juce::String(static_cast<double>(home_position_.load()) / kSampleRate, 3) + ",\n" +
             "  \"played_source_seconds\": " + juce::String(static_cast<double>(home_position_.load() - golden_track_.handoff_anchor()) / kSampleRate, 3) + ",\n" +
@@ -580,6 +736,11 @@ private:
             "  \"world_underruns\": " + juce::String(world_underruns_.load()) + ",\n" +
             "  \"peak_output\": " + juce::String(peak_output_.load(), 6) + ",\n" +
             "  \"peak_world\": " + juce::String(peak_world_.load(), 6) + ",\n" +
+            "  \"peak_source_anchor\": " + juce::String(peak_anchor_.load(), 6) + ",\n" +
+            "  \"source_anchor_frames\": " + juce::String(source_anchor_frames_.load()) + ",\n" +
+            "  \"hybrid_ab_frames\": " + juce::String(hybrid_frames_.load()) + ",\n" +
+            "  \"prefill_only_ab_frames\": " + juce::String(prefill_only_frames_.load()) + ",\n" +
+            "  \"source_anchor_method\": \"realtime_multiband_proxy\",\n" +
             "  \"limited_samples\": " + juce::String(limited_samples_.load()) + ",\n" +
             "  \"max_world_mix\": " + juce::String(max_world_mix_.load(), 6) + ",\n" +
             "  \"final_world_mix\": " + juce::String(current_world_mix_.load(), 6) + ",\n" +
@@ -602,15 +763,20 @@ private:
     juce::TextButton play_;
     juce::TextButton enter_world_;
     juce::TextButton home_;
+    juce::TextButton ab_compare_;
     juce::TextButton dub_;
     juce::TextButton disco_;
     juce::TextButton ambient_;
+    juce::TextButton bass_anchor_;
+    juce::TextButton hook_anchor_;
+    juce::TextButton air_anchor_;
 
     const bool smoke_test_;
     const juce::File smoke_report_;
     const juce::File track_file_;
     GoldenTrack golden_track_;
     juce::AudioBuffer<float> world_audio_;
+    song_world::SourceAnchorMixer anchor_mixer_{kSampleRate};
     std::unique_ptr<song_world::GenerativeEngine> engine_;
     std::thread model_loader_;
 
@@ -623,11 +789,27 @@ private:
     std::atomic<float> max_world_mix_{0.0F};
     std::atomic<float> peak_output_{0.0F};
     std::atomic<float> peak_world_{0.0F};
+    std::atomic<float> peak_anchor_{0.0F};
+    std::atomic<float> target_anchor_bass_{kHybridProfiles[0].anchors.bass};
+    std::atomic<float> target_anchor_hook_{kHybridProfiles[0].anchors.hook};
+    std::atomic<float> target_anchor_air_{kHybridProfiles[0].anchors.air};
+    std::atomic<float> target_generation_gain_{kHybridProfiles[0].generation};
+    std::atomic<float> current_anchor_bass_{kHybridProfiles[0].anchors.bass};
+    std::atomic<float> current_anchor_hook_{kHybridProfiles[0].anchors.hook};
+    std::atomic<float> current_anchor_air_{kHybridProfiles[0].anchors.air};
+    std::atomic<float> current_generation_gain_{kHybridProfiles[0].generation};
+    std::atomic<bool> anchor_bass_enabled_{true};
+    std::atomic<bool> anchor_hook_enabled_{true};
+    std::atomic<bool> anchor_air_enabled_{true};
+    std::atomic<bool> hybrid_enabled_{true};
     std::atomic<double> actual_sample_rate_{kSampleRate};
     std::atomic<std::uint64_t> home_position_{0};
     std::atomic<std::uint64_t> audio_callbacks_{0};
     std::atomic<std::uint64_t> world_reads_{0};
     std::atomic<std::uint64_t> world_underruns_{0};
+    std::atomic<std::uint64_t> source_anchor_frames_{0};
+    std::atomic<std::uint64_t> hybrid_frames_{0};
+    std::atomic<std::uint64_t> prefill_only_frames_{0};
     std::atomic<std::uint64_t> limited_samples_{0};
 
     std::array<float, 3> current_style_weights_{1.0F, 0.0F, 0.0F};
@@ -652,12 +834,12 @@ class MainWindow final : public juce::DocumentWindow {
 public:
     MainWindow(bool smoke_test, const juce::File& smoke_report,
                const juce::File& track_file)
-        : DocumentWindow("Song World Prototype",
+        : DocumentWindow("Song World Hybrid Anchors",
                          juce::Colour(0xff0b0f14),
                          juce::DocumentWindow::allButtons) {
         setUsingNativeTitleBar(true);
         setResizable(true, true);
-        setResizeLimits(760, 520, 1200, 800);
+        setResizeLimits(760, 620, 1200, 900);
         setContentOwned(new MainComponent(smoke_test, smoke_report, track_file), true);
         centreWithSize(getWidth(), getHeight());
         setVisible(true);
@@ -670,8 +852,8 @@ public:
 
 class SongWorldApplication final : public juce::JUCEApplication {
 public:
-    const juce::String getApplicationName() override { return "Song World Prototype"; }
-    const juce::String getApplicationVersion() override { return "0.2.0-local"; }
+    const juce::String getApplicationName() override { return "Song World Hybrid Anchors"; }
+    const juce::String getApplicationVersion() override { return "0.3.0-experiment"; }
     bool moreThanOneInstanceAllowed() override { return false; }
 
     void initialise(const juce::String&) override {

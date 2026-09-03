@@ -29,6 +29,37 @@ public:
     void start() override { running_.store(true, std::memory_order_release); }
     void stop() override { running_.store(false, std::memory_order_release); }
 
+    bool restart_from_prefill(std::string& error) override {
+        if (!source_prefilled_.load(std::memory_order_acquire)) {
+            error = "Mock cannot replay before source prefill";
+            return false;
+        }
+        phase_ = 0.0;
+        pulse_phase_ = 0.0;
+        running_.store(true, std::memory_order_release);
+        return true;
+    }
+
+    void update_semantic_prompts(
+        const std::array<std::string, kSemanticPromptSlots>&) override {}
+
+    bool set_audio_prompt(std::size_t slot,
+                          const float* mono_16khz,
+                          std::size_t samples,
+                          const std::string&,
+                          std::string& error) override {
+        if (mono_16khz == nullptr || samples == 0) {
+            error = "Mock audio reference requires samples";
+            return false;
+        }
+        if (slot >= kSemanticPromptSlots) {
+            error = "Mock audio prompt slot is out of range";
+            return false;
+        }
+        audio_prompt_ready_[slot].store(true, std::memory_order_release);
+        return true;
+    }
+
     void set_conditioning(const ConditioningState& state) noexcept override {
         morph_.store(std::clamp(state.x, 0.0F, 1.0F), std::memory_order_relaxed);
         sequence_.store(state.sequence, std::memory_order_relaxed);
@@ -62,12 +93,19 @@ public:
     }
 
     EngineTelemetry telemetry() const override {
+        std::array<int, kSemanticPromptSlots> prompt_statuses{};
+        for (std::size_t slot = 0; slot < kSemanticPromptSlots; ++slot) {
+            prompt_statuses[slot] = audio_prompt_ready_[slot].load(
+                std::memory_order_acquire) ? 2 : 0;
+        }
         return {
             .backend = "mock",
             .ready = ready_.load(std::memory_order_acquire),
             .conditioning_sequence = sequence_.load(std::memory_order_relaxed),
             .source_prefilled = source_prefilled_.load(std::memory_order_acquire),
             .source_prefill_frames = source_prefill_frames_.load(std::memory_order_relaxed),
+            .audio_prompt_statuses = prompt_statuses,
+            .audio_reference_status = prompt_statuses.back(),
         };
     }
 
@@ -78,6 +116,7 @@ private:
     std::atomic<std::uint64_t> sequence_{0};
     std::atomic<bool> source_prefilled_{false};
     std::atomic<std::size_t> source_prefill_frames_{0};
+    std::array<std::atomic<bool>, kSemanticPromptSlots> audio_prompt_ready_{};
     double phase_{0.0};
     double pulse_phase_{0.0};
 };

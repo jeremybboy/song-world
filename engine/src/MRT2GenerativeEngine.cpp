@@ -40,8 +40,10 @@ public:
         }
 
         const std::vector<std::string> prompts{
-            config.prompt_a, config.prompt_b, config.prompt_c};
-        const std::vector<float> initial_weights{1.0F, 0.0F, 0.0F};
+            config.prompt_a, config.prompt_b, config.prompt_c,
+            config.prompt_d, config.prompt_e, config.prompt_f};
+        const std::vector<float> initial_weights{1.0F, 0.0F, 0.0F,
+                                                 0.0F, 0.0F, 0.0F};
         runner_.set_text_prompts(prompts, initial_weights);
 
         constexpr auto prompt_timeout = std::chrono::seconds(60);
@@ -128,17 +130,67 @@ public:
         if (running_.exchange(false, std::memory_order_acq_rel)) runner_.stop();
     }
 
+    bool restart_from_prefill(std::string& error) override {
+        if (!ready_.load(std::memory_order_acquire) ||
+            !source_prefilled_.load(std::memory_order_acquire)) {
+            error = "MRT2 cannot replay before source prefill is complete";
+            return false;
+        }
+        runner_.start();
+        running_.store(true, std::memory_order_release);
+        return true;
+    }
+
+    void update_semantic_prompts(
+        const std::array<std::string, kSemanticPromptSlots>& prompts) override {
+        std::vector<std::string> prompt_vector(prompts.begin(), prompts.end());
+        std::vector<float> weights(kSemanticPromptSlots, 0.0F);
+        for (std::size_t index = 0; index < kSemanticPromptSlots; ++index) {
+            weights[index] = conditioning_weights_[index].load(
+                std::memory_order_relaxed);
+        }
+        runner_.set_text_prompts(prompt_vector, weights);
+    }
+
+    bool set_audio_prompt(std::size_t slot,
+                          const float* mono_16khz,
+                          std::size_t samples,
+                          const std::string& filename,
+                          std::string& error) override {
+        if (!ready_.load(std::memory_order_acquire)) {
+            error = "MRT2 must be prepared before loading an audio reference";
+            return false;
+        }
+        if (mono_16khz == nullptr || samples == 0) {
+            error = "Audio reference must contain mono 16 kHz samples";
+            return false;
+        }
+        if (slot >= kSemanticPromptSlots) {
+            error = "Audio prompt slot is out of range";
+            return false;
+        }
+        runner_.set_audio_prompt_samples(
+            static_cast<int>(slot), filename, mono_16khz, samples);
+        return true;
+    }
+
     void set_conditioning(const ConditioningState& state) noexcept override {
-        float weights[3]{std::max(0.0F, state.style_a),
-                         std::max(0.0F, state.style_b),
-                         std::max(0.0F, state.style_c)};
-        const float total = weights[0] + weights[1] + weights[2];
+        float weights[kSemanticPromptSlots]{
+            std::max(0.0F, state.style_a), std::max(0.0F, state.style_b),
+            std::max(0.0F, state.style_c), std::max(0.0F, state.style_d),
+            std::max(0.0F, state.style_e), std::max(0.0F, state.style_f)};
+        float total = 0.0F;
+        for (const auto weight : weights) total += weight;
         if (total > 0.0F) {
             for (auto& weight : weights) weight /= total;
         } else {
             weights[0] = 1.0F;
         }
-        runner_.set_blend_weights(weights, 3);
+        for (std::size_t index = 0; index < kSemanticPromptSlots; ++index) {
+            conditioning_weights_[index].store(weights[index],
+                                               std::memory_order_relaxed);
+        }
+        runner_.set_blend_weights(weights, static_cast<int>(kSemanticPromptSlots));
         sequence_.store(state.sequence, std::memory_order_relaxed);
     }
 
@@ -148,6 +200,11 @@ public:
 
     EngineTelemetry telemetry() const override {
         const auto metrics = runner_.get_metrics();
+        std::array<int, kSemanticPromptSlots> prompt_statuses{};
+        for (std::size_t slot = 0; slot < kSemanticPromptSlots; ++slot) {
+            prompt_statuses[slot] = runner_.get_prompt_status(
+                static_cast<int>(slot));
+        }
         return {
             .backend = "mrt2",
             .ready = ready_.load(std::memory_order_acquire),
@@ -161,6 +218,10 @@ public:
             .source_prefilled = source_prefilled_.load(std::memory_order_acquire),
             .source_prefill_frames = prefill_frames_.load(std::memory_order_relaxed),
             .source_prefill_ms = prefill_ms_,
+            .prompt_encoder_status = runner_.get_text_encoder_status(),
+            .prompt_quantizer_status = runner_.get_quantizer_status(),
+            .audio_prompt_statuses = prompt_statuses,
+            .audio_reference_status = prompt_statuses.back(),
         };
     }
 
@@ -172,6 +233,8 @@ private:
     std::atomic<bool> prefill_available_{false};
     std::atomic<bool> source_prefilled_{false};
     std::atomic<std::size_t> prefill_frames_{0};
+    std::array<std::atomic<float>, kSemanticPromptSlots> conditioning_weights_{
+        1.0F, 0.0F, 0.0F, 0.0F, 0.0F, 0.0F};
     double prepare_ms_{0.0};
     double prefill_ms_{0.0};
 };

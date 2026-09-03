@@ -1,4 +1,5 @@
 #include <song_world/GenerativeEngine.h>
+#include <song_world/SourceAnchorMixer.h>
 #include <song_world/WorldTransport.h>
 
 #include <cmath>
@@ -20,6 +21,39 @@ int fail(const char* message) {
 }  // namespace
 
 int main() {
+    song_world::SourceAnchorMixer anchor_mixer(48000.0);
+    float bass_energy = 0.0F;
+    float hook_energy = 0.0F;
+    float air_energy = 0.0F;
+    for (int sample = 0; sample < 48000; ++sample) {
+        const float time = static_cast<float>(sample) / 48000.0F;
+        const float left = 0.5F * std::sin(2.0F * 3.14159265F * 90.0F * time) +
+                           0.2F * std::sin(2.0F * 3.14159265F * 900.0F * time) +
+                           0.1F * std::sin(2.0F * 3.14159265F * 7000.0F * time);
+        const float right = 0.5F * std::sin(2.0F * 3.14159265F * 90.0F * time) +
+                            0.2F * std::sin(2.0F * 3.14159265F * 900.0F * time) -
+                            0.1F * std::sin(2.0F * 3.14159265F * 7000.0F * time);
+        const auto bass = anchor_mixer.process(left, right, {1.0F, 0.0F, 0.0F});
+        bass_energy += std::abs(bass.left) + std::abs(bass.right);
+    }
+    anchor_mixer.reset();
+    for (int sample = 0; sample < 48000; ++sample) {
+        const float time = static_cast<float>(sample) / 48000.0F;
+        const float mid = 0.2F * std::sin(2.0F * 3.14159265F * 900.0F * time);
+        const auto hook = anchor_mixer.process(mid, mid, {0.0F, 1.0F, 0.0F});
+        hook_energy += std::abs(hook.left) + std::abs(hook.right);
+    }
+    anchor_mixer.reset();
+    for (int sample = 0; sample < 48000; ++sample) {
+        const float time = static_cast<float>(sample) / 48000.0F;
+        const float side = 0.1F * std::sin(2.0F * 3.14159265F * 7000.0F * time);
+        const auto air = anchor_mixer.process(side, -side, {0.0F, 0.0F, 1.0F});
+        air_energy += std::abs(air.left) + std::abs(air.right);
+    }
+    if (bass_energy < 100.0F || hook_energy < 100.0F || air_energy < 100.0F) {
+        return fail("source anchor bands must produce finite nonzero output");
+    }
+
     song_world::WorldTransport transport(48000.0, 120.0);
     transport.set_tempo_ratio(1.25);
     transport.advance(48000);
@@ -72,8 +106,16 @@ int main() {
     if (mock->telemetry().conditioning_sequence != 7) {
         return fail("conditioning sequence must reach the engine");
     }
+    const float first_sample = left.front();
+    if (!mock->restart_from_prefill(error)) {
+        return fail("mock replay from prefill failed");
+    }
+    if (!mock->pull_audio(left.data(), right.data(), left.size()) ||
+        !nearly_equal(left.front(), first_sample, 1.0e-7)) {
+        return fail("replay must restore deterministic post-prefill generation");
+    }
     mock->stop();
 
-    std::cout << "PASS: deterministic transport and mock engine\n";
+    std::cout << "PASS: source anchors, deterministic transport, and mock engine\n";
     return EXIT_SUCCESS;
 }

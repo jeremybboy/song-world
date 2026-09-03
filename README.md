@@ -10,6 +10,18 @@ Song World is a local-first macOS musical instrument prototype: a listener moves
 
 The direct A→B differential test measured 134.9 ms from the control write to the first changed output sample. See the [complete feasibility report](docs/phase0-feasibility-report.md) and [raw evidence inventory](docs/evidence/README.md). That gate now supports the local source-connected milestone below.
 
+## Playable Window Lab
+
+The current approved prototype turns one prepared 27.317-second section into a
+replayable portal: the untouched master approaches the window, a single
+persistent MRT2 Small continuation becomes audible in World, semantic weights
+change without restarting generation, and the exact master resumes afterward.
+After the portal closes, **Replay Window** restores the existing post-prefill
+checkpoint and repeats the approach without reloading the model. The signed
+local bundle passed two consecutive window traversals with zero underruns,
+zero navigation resets, and sample-exact Home return; see the
+[measured Playable Window report](docs/playable-window-lab-report.md).
+
 ## Local source-connected milestone
 
 The local standalone app now seeds MRT2 Small from 28 seconds of a user-provided
@@ -28,9 +40,11 @@ xcodebuild -downloadComponent MetalToolchain
 python3 -m venv ../phase0-tools
 ../phase0-tools/bin/pip install cmake==3.27.9
 env TOOLCHAINS=com.apple.dt.toolchain.Metal.32023.883 \
-  ../phase0-tools/bin/cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+  ../phase0-tools/bin/cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
+  -DSONG_WORLD_GOLDEN_TRACK=/absolute/path/to/local-test-track.mp3
 env TOOLCHAINS=com.apple.dt.toolchain.Metal.32023.883 \
-  ../phase0-tools/bin/cmake --build build --target song_world_phase0 song_world_engine_tests -j 6
+  ../phase0-tools/bin/cmake --build build \
+  --target song_world_playable_window song_world_engine_tests -j 6
 ../phase0-tools/bin/ctest --test-dir build --output-on-failure
 ```
 
@@ -61,7 +75,8 @@ The bootstrap commit is the only direct `main` change. All implementation work f
 
 ## Current boundary
 
-The engine and standalone app now prove local source-prefilled generation and
-deterministic Home return for one fixed golden-track anchor. Arbitrary import,
-beat/bar analysis, separation, Hold/Loop, causal rolling prefill, and perceptual
-identity validation remain outside this milestone.
+The engine and standalone app now prove a bounded, replayable single-stream
+World with deterministic Home return for one locally supplied golden-track
+anchor. Arbitrary import, beat/bar analysis, separation, Hold/Loop, causal
+rolling prefill, and broader perceptual identity validation remain outside this
+milestone.

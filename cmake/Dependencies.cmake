@@ -73,3 +73,17 @@ FetchContent_Declare(
     SOURCE_SUBDIR core
 )
 FetchContent_MakeAvailable(magenta_realtime)
+
+# The playable-window lab keeps the upstream producer/consumer design but
+# needs enough reserve to ride through occasional MLX reblend spikes. Existing
+# targets still request their original 8,192-sample virtual capacity.
+file(READ "${magenta_realtime_SOURCE_DIR}/core/include/magentart/ring_buffer.h"
+     MAGENTA_RING_BUFFER_HEADER)
+string(REPLACE
+    "static constexpr size_t kCapacity = 8192;"
+    "static constexpr size_t kCapacity = 32768;"
+    MAGENTA_RING_BUFFER_HEADER
+    "${MAGENTA_RING_BUFFER_HEADER}"
+)
+file(WRITE "${magenta_realtime_SOURCE_DIR}/core/include/magentart/ring_buffer.h"
+     "${MAGENTA_RING_BUFFER_HEADER}")
